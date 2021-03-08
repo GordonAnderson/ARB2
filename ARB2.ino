@@ -1,3 +1,17 @@
+#include <DueFlashStorage.h>
+#include <efc.h>
+#include <flash_efc.h>
+#include "Arduino.h"
+#include "Wire.h"
+#include "SPI.h"
+#include "arb.h"
+#include "serial.h"
+#include "Errors.h"
+#include "hardware.h"
+#include <MIPStimer.h>
+#include <Parallel.h>
+#include <SerialBuffer.h>
+
 //
 // File: ARB2
 //
@@ -135,6 +149,23 @@
 //          - Allow interrupt line selection for compresion and sync
 //          - Sync is a narrow pulse and it can share a line with compresion, look into this option
 //          - Added TWI commands to select sync and compress lines and ISR compress option
+// Version 2.6, Mar 21,2020
+//          - Fixed error with delayed trigger in alternate waveform mode, was adding delay to the duration.
+//          - Fixed bug with duration set to 0
+// Version 2.7, Dec 4, 2020
+//          - Added new DMA restart function to remove jitter. I now use a timer to restart at a fixed delay
+//          - after the controller has reported it has stopped
+//          - EnablePower pin was not set to output, fixed that bug
+// Version 2.8, Dec 14, 2020
+//          - Fixed bugs in PPP command that caused a crash
+// Version 2.9, Jan 18, 2021
+//          - For some reason the triangle waveform was disabled, the code was commented out so I removed the 
+//            comments and reenabled
+// Version 2.11, Feb 14, 2021
+//          - Fixed voltage ramping bugs.
+//          - Note version is 2.11 not 2.10 due to how the numeric part of the
+//            version number is use. The versions should have reall been .000
+//            format.
 //
 // Implementation notes for programming through the TWI interface, all items are done
 //      1.) Write a mover application that is located at the start of flash bank 1. This app, when called
@@ -164,23 +195,9 @@
 //
 // Gordon Anderson
 //
-#include <DueFlashStorage.h>
-#include <efc.h>
-#include <flash_efc.h>
-#include "Arduino.h"
-#include "Wire.h"
-#include "SPI.h"
-#include "arb.h"
-#include "serial.h"
-#include "Errors.h"
-#include "hardware.h"
-#include <MIPStimer.h>
-#include <Parallel.h>
-#include <SerialBuffer.h>
-
 
 // Constants
-#define PPP   32            // Number of points per waveform period
+#define PPP   128           // Number of points per waveform period
 #define NP    1             // Number of periods in buffer, has to be 1 for compresion. The actual buffer
 // is twice this or two periods. The second period holds at the last value
 // of the first period and is used for compresion
@@ -193,12 +210,13 @@
 #define DACoffset DAC0      // DAC used to set the output amplifier offset
 
 MIPStimer DMAclk(0);        // This timer is used to generate the clock for DMA
+MIPStimer ResetTMR(2);      // This timer is used to remove jitter on the sync function
 MIPStimer ARBclk(3);        // This timer is used to generate the clock in interrupt mode
 MIPStimer ALTtmr(4);        // This timer is used to det the delay and duration of the alternut waveform.
                             // User 10.5MHz, delay and playtime are in mS.
 
-char Version[] = "\nARB Version 2.5, Mar 5, 2020";
-float fVersion = 2.5;
+char Version[] = "\nARB Version 2.11, Feb 14, 2021";
+float fVersion = 2.11;
 
 SerialBuffer sb;
 
@@ -435,13 +453,13 @@ void SetWaveformType(int wft)
       {
         if (!ARBparms.Direction)
         {
-          //for (i = 0; i < ARBparms.ppp / 2; i++) Waveform[ch][(i + ch * ARBparms.ppp / (CHANS)) % ARBparms.ppp] = ARBchannelValue2Counts(ch, -100.0 + (200.0 * (float)i) / (float)(ARBparms.ppp / 2 - 1));
-          //for (i = 0; i < ARBparms.ppp / 2; i++) Waveform[ch][(i + ARBparms.ppp / 2 + ch * ARBparms.ppp / (CHANS)) % ARBparms.ppp] = ARBchannelValue2Counts(ch, 100.0 - (200.0 * (float)i) / (float)(ARBparms.ppp / 2 - 1));
+          for (i = 0; i < ARBparms.ppp / 2; i++) Waveform[ch][(i + ch * ARBparms.ppp / (CHANS)) % ARBparms.ppp] = ARBchannelValue2Counts(ch, -100.0 + (200.0 * (float)i) / (float)(ARBparms.ppp / 2 - 1));
+          for (i = 0; i < ARBparms.ppp / 2; i++) Waveform[ch][(i + ARBparms.ppp / 2 + ch * ARBparms.ppp / (CHANS)) % ARBparms.ppp] = ARBchannelValue2Counts(ch, 100.0 - (200.0 * (float)i) / (float)(ARBparms.ppp / 2 - 1));
         }
         else
         {
-          //for (i = 0; i < ARBparms.ppp / 2; i++) WaveformR[ch][(i + (CHANS - 1 - ch) * ARBparms.ppp / (CHANS)) % ARBparms.ppp] = ARBchannelValue2Counts(ch, -100.0 + (200.0 * (float)i) / (float)(ARBparms.ppp / 2 - 1));
-          //for (i = 0; i < ARBparms.ppp / 2; i++) WaveformR[ch][(i + ARBparms.ppp / 2 + (CHANS - 1 - ch) * ARBparms.ppp / (CHANS)) % ARBparms.ppp] = ARBchannelValue2Counts(ch, 100.0 - (200.0 * (float)i) / (float)(ARBparms.ppp / 2 - 1));
+          for (i = 0; i < ARBparms.ppp / 2; i++) WaveformR[ch][(i + (CHANS - 1 - ch) * ARBparms.ppp / (CHANS)) % ARBparms.ppp] = ARBchannelValue2Counts(ch, -100.0 + (200.0 * (float)i) / (float)(ARBparms.ppp / 2 - 1));
+          for (i = 0; i < ARBparms.ppp / 2; i++) WaveformR[ch][(i + ARBparms.ppp / 2 + (CHANS - 1 - ch) * ARBparms.ppp / (CHANS)) % ARBparms.ppp] = ARBchannelValue2Counts(ch, 100.0 - (200.0 * (float)i) / (float)(ARBparms.ppp / 2 - 1));
         }
       }
       break;
@@ -850,8 +868,8 @@ void receiveEvent(int howMany)
           break;
         case TWI_SET_RANGE:
           if (!ReadFloat(&fval)) break;
-          ARBparms.VoltageRange = fval;
-          AuxDACupdate |= UpdateVoltageRange;
+          VoltageRangeRequest = fval;
+          RangeUpdate = true;
           break;
         case TWI_SET_RAMP:
           if (!ReadFloat(&fval)) break;
@@ -1026,7 +1044,7 @@ void receiveEvent(int howMany)
           break;
         case TWI_SET_PPP:
           if (!ReadByte(&b)) break;
-          ARBparms.ppp = b;
+          ARBparms.ppp = (uint8_t)b;
           break;
         case TWI_SAVE:
           SaveSettings();
@@ -1232,6 +1250,8 @@ void ARBline1ISR(void)
   // If this is a detection of a pulse event it will only be 1uS wide, so we delay 1uS
   // and if there is no pin state change then this must be a pulse event
   delayMicroseconds(1);
+  uint32_t j = pio->PIO_ISR;  // This will clear pending ISR from the other edge in the case
+                              // of 1uS pulse. Added 12/3/2020
   if(digitalRead(ARBline1) == PinState) 
   {
     if(pio->PIO_FRLHSR & pin) return; // Exit if falling edge
@@ -1241,7 +1261,7 @@ void ARBline1ISR(void)
     return;
   }
   PinState = digitalRead(ARBline1);
-  // If here that the state of ARBline1 has changed.
+  // If here then the state of ARBline1 has changed.
   if(ARBline1stateISR != NULL) ARBline1stateISR(PinState);
 }
 
@@ -1258,6 +1278,8 @@ void ARBline2ISR(void)
   // If this is a detection of a pulse event it will only be 1uS wide, so we delay 1uS
   // and if there is no pin state change then this must be a pulse event
   delayMicroseconds(1);
+  uint32_t j = pio->PIO_ISR;  // This will clear pending ISR from the other edge in the case
+                              // of 1uS pulse. Added 12/3/2020
   if(digitalRead(ARBline2) == PinState) 
   {
     if(pio->PIO_FRLHSR & pin) return; // Exit if falling edge
@@ -1315,9 +1337,10 @@ void ALTwaveformStopISR(void)
 // Interrupt fires after trigger delay, sets the alternate waveform
 void ALTwaveformStartISR(void)
 {
+  if(ARBparms.PlayDuration == 0) return;
   ARBparms.AlternateEnable = true;
   ALTtmr.attachInterrupt(ALTwaveformStopISR);
-  ALTtmr.setRC((ARBparms.TriggerDly + ARBparms.PlayDuration) * CLKSperMS);
+  ALTtmr.setRC(ARBparms.PlayDuration * CLKSperMS);
   ALTtmr.softwareTrigger();
 }
 
@@ -1388,11 +1411,18 @@ void setup()
   int   i;
 
   // Diable the power supply
-  pinMode(PowerEnable, INPUT);
+  pinMode(PowerEnable, OUTPUT);
   digitalWrite(PowerEnable, HIGH);
   // Set the external clock source the MIPS
   pinMode(ExtClockSel,OUTPUT);
   digitalWrite(ExtClockSel,LOW);
+  // Setup the resync timer
+  ResetTMR.stop();
+  ResetTMR.begin();
+  ResetTMR.attachInterrupt(DMAstartISR);
+  ResetTMR.setTrigger(TC_CMR_EEVTEDG_NONE);
+  ResetTMR.setClock(TC_CMR_TCCLKS_TIMER_CLOCK2);   // 10.5 MHz clock
+  ResetTMR.stopOnRC();
   // Setup the serial port, used for debug operations
   SerialInit();
   // Init SPI
@@ -1472,6 +1502,8 @@ void setup()
   attachInterrupt(CompressPin, ARBline2ISR, CHANGE);
   //
   AuxDACupdate = UpdateAll;
+  RangeUpdate  = true;
+  VoltageRangeRequest = ARBparms.VoltageRange;
   //AD5625_EnableRef(DACadr);
   ARBparms.RefDAC = (ARBparms.AuxOffRef / ARBparms.DACrefVoltage) * 65535;
   AD5592writeDAC(AD5592_CS, DACrefCH, ARBparms.RefDAC);
@@ -1511,13 +1543,14 @@ void ProcessSerial(bool scan = true)
   if (strlen(VectorString) > 0) ProcessVectorString();
 }
 
-void ProcessRamp(void)
+// Returns true is range was updated.
+bool ProcessRamp(void)
 {
   static bool      ramping = false;
   static uint32_t  starttime;
   float            Vstep;
   
-  if(!RangeUpdate) return;
+  if(!RangeUpdate) return false;
   if(ARBparms.RampRate == 0.0) 
   {
     ARBparms.VoltageRange = VoltageRangeRequest;
@@ -1530,6 +1563,7 @@ void ProcessRamp(void)
     {
       ramping   = true;
       starttime = millis();
+      return false;
     }
     else
     {
@@ -1548,6 +1582,7 @@ void ProcessRamp(void)
       }
     }
   }
+  return true;
 }
 
 void ProcessSweep(void)
@@ -1645,7 +1680,7 @@ void loop()
     noInterrupts();
     b = AuxDACupdate;
     interrupts();
-    if((b & UpdateVoltageRange) != 0)  WriteWFrange(ARBparms.VoltageRange);
+    if((b & UpdateVoltageRange) != 0)  RangeUpdate = true;
     if((b & UpdateAltRange) != 0)      WriteWFrange(ARBparms.AlternateRng);
     if((b & UpdateVoltageOffset) != 0) WriteWFoffset(ARBparms.VoltageOffset);
     if((b & UpdateVoltageAux) != 0)    WriteWFaux(ARBparms.VoltageAux);
@@ -1655,7 +1690,7 @@ void loop()
     AuxDACupdate &= ~b;
     interrupts();
   }
-  ProcessRamp();
+  if(!ProcessRamp()) MeasureVoltages();
   ProcessSweep();
   if (SweepUpdateRequest)
   {
@@ -1678,7 +1713,6 @@ void loop()
       DMAclk.softwareTrigger();
     }
   }
-  MeasureVoltages();
 }
 
 //
@@ -1885,8 +1919,8 @@ void SetWFrange(char *srange)
   range = spar.toFloat();
   if ((range >= 0) && (range <= 100))
   {
-    ARBparms.VoltageRange = range;
-    WriteWFrange(range);
+    VoltageRangeRequest = range;
+    RangeUpdate = true;
     SendACK;
     return;
   }
