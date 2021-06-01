@@ -33,7 +33,7 @@ char *SelectedACKonlyString = ACKonlyString1;
 bool echoMode = false;
 
 Commands  CmdArray[] =   {
-  // General commands
+// General commands
   {"GVER",  CMDstr, 0, (char *)Version},                 // Report version
   {"GERR",  CMDint, 0, (char *)&ErrorCode},              // Report the last error code
   {"SERIAL", CMDfunction, 0, (char *)&SerialIO},         // Reassigns the serial IO port to SerialUSB
@@ -56,7 +56,9 @@ Commands  CmdArray[] =   {
   {"XPT",  CMDbool, 1, (char *)&ARBparms.XPtiming},      // TRUE to select timing options for XPtiming logic
   {"SPPP", CMDint, 1, (char *)&ARBparms.ppp},            // Sets ARB Twave mode point per period, 32 max, not tested
   {"GPPP", CMDint, 0, (char *)&ARBparms.ppp},            // Returns ARB Twave mode point per period  
-  // ARB general commands
+// JTAGpgm commands
+  {"JTAG",  CMDfunction, 0, (char *)JTAGplay},                            // Calls the jtag uploader
+// ARB general commands
   {"SMODE", CMDfunctionStr, 1, (char *)SetMode},         // Sets the ARB mode
   {"GMODE", CMDfunction, 0, (char *)GetMode},            // Reports the ARB mode
   {"SWFREQ", CMDfunction, 1, (char *)SetWFfreq},         // Sets waveform frequency, 0 to 45000Hz
@@ -84,11 +86,16 @@ Commands  CmdArray[] =   {
   {"SDACR", CMDfunction, 2, (char *)SetDACchannelR},     // Sets the selected DAC channel value, channel is 0-7 and value is raw counts 0-255
   {"SDACV", CMDfunctionStr, 2, (char *)SetDACchannelV},  // Sets the selected DAC channel value, channel is 0-7 and value is percent of FS, +-100
   {"SWFDIR", CMDbool, 1, (char *)&ARBparms.Direction},   // Set waveform direction, forward = TRUE, reverse = FALSE
-  {"SWFCMP", CMDbool, 1, (char *)&ARBparms.CompressEnable},// Enables or disables compression mode, TRUE = enable
+  {"GWFDIR", CMDbool, 0, (char *)&ARBparms.Direction},   // Returns direction flag
+  //{"SWFCMP", CMDbool, 1, (char *)&ARBparms.CompressEnable},// Enables or disables compression mode, TRUE = enable
+  {"SWFCMP", CMDfunctionStr, 1, (char *)SetCompressor},  // Enables or disables compression mode, TRUE = enable
+  {"GWFCMP", CMDbool, 0, (char *)&ARBparms.CompressEnable},// Return compression flag
   {"SWFORD", CMDint, 1, (char *)&ARBparms.Order},          // Set the compression order
   {"GWFORD", CMDint, 0, (char *)&ARBparms.Order},          // Returns the compression order
   {"SWFEXTCMP", CMDbool, 1 , (char *)&ARBparms.CompressHardware},    // Enable external compression control, TRUE OR FALSE  
+  {"GWFEXTCMP", CMDbool, 0 , (char *)&ARBparms.CompressHardware},    // Returns external compression control flag 
   {"GBCOUNT", CMDint, 0, (char *)&Bcount},
+  {"GOPT", CMDfunction, 0, (char *)ReportOption},
   // ARB conventional ARB mode commands
   {"SARBBUF", CMDint, 1, (char *)&ARBparms.Bufferlength},   // Sets ARB buffer length
   {"GARBBUF", CMDint, 0, (char *)&ARBparms.Bufferlength},   // Reports ARB buffer length

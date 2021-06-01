@@ -1,8 +1,8 @@
 #include "hardware.h"
 #include "SPI.h"
 
-int ARBsync    = A6;      // Used to signal a sync operation or trigger, was A0 on the older rev with the plug
-                          // Arduino
+int ARBsync    = A6;      // Used to signal a sync operation or trigger, was A0 on the older rev with the plug in
+                          // Arduino DUE. A6 is also corrent on hardware rev 4.2
 int CompressPin= 22;      // Used to flag compression mode
 
 // Two structure arrays used to enable continous DMA of the buffer.
@@ -11,6 +11,95 @@ volatile LLI lliA[NumLLI];
 volatile LLI lliB[NumLLI]; 
 volatile int lliMax = 0;
 volatile int Bcount;    // Used to count the number of buffers transfered to the DACs
+
+// On rev 4.2 controller the following processor pins are connected to the programming 
+// pins of the CPLD
+// PA8 to TMS Due pin 0
+// PA7 to TDI Due pin 26
+// PA5 to TDO Due pin not defined
+// PA1 to TCK Due pin CANRX
+// To use the jtag library we need to create a pin discriptor aray with these pins defined.
+// We also need to over load functions in jtag driver to use our pin description array
+// M0 pin assigenments
+PinDescription jtag_APinDescription[]=
+{
+  { PIOA, PIO_PA8,   ID_PIOA, PIO_PERIPH_A, PIO_DEFAULT, PIN_ATTR_TIMER, NO_ADC, NO_ADC, NOT_ON_PWM,  NOT_ON_TIMER},  // TMS, 0
+  { PIOA, PIO_PA7,   ID_PIOA, PIO_PERIPH_A, PIO_DEFAULT, PIN_ATTR_TIMER, NO_ADC, NO_ADC, NOT_ON_PWM,  NOT_ON_TIMER},  // TDI, 1
+  { PIOA, PIO_PA5,   ID_PIOA, PIO_PERIPH_A, PIO_DEFAULT, PIN_ATTR_TIMER, NO_ADC, NO_ADC, NOT_ON_PWM,  NOT_ON_TIMER},  // TDO, 2
+  { PIOA, PIO_PA1,   ID_PIOA, PIO_PERIPH_A, PIO_DEFAULT, PIN_ATTR_TIMER, NO_ADC, NO_ADC, NOT_ON_PWM,  NOT_ON_TIMER},  // TCK, 3
+  { PIOB, PIO_PB22,  ID_PIOB, PIO_PERIPH_B, PIO_DEFAULT, PIN_ATTR_TIMER, NO_ADC, NO_ADC, NOT_ON_PWM,  NOT_ON_TIMER},  // VREF, 4
+};
+GPIO_BIT_TYPE mydigitalPinToBitMask(uint8_t pin)
+{
+  return jtag_APinDescription[pin].ulPin;
+}
+
+GPIO_PORT_TYPE mydigitalPinToPort(uint8_t pin)
+{
+  return jtag_APinDescription[pin].pPort;
+}
+
+void mypinMode(GPIO_BIT_TYPE ulPin, uint8_t m)
+{
+    switch(m)
+    {
+        case INPUT:
+            /* Enable peripheral for clocking input */
+            pmc_enable_periph_clk(jtag_APinDescription[ulPin].ulPeripheralId);
+            PIO_Configure(jtag_APinDescription[ulPin].pPort,PIO_INPUT,jtag_APinDescription[ulPin].ulPin,0);
+            break;
+        case INPUT_PULLUP:
+            /* Enable peripheral for clocking input */
+            pmc_enable_periph_clk( jtag_APinDescription[ulPin].ulPeripheralId);
+            PIO_Configure(jtag_APinDescription[ulPin].pPort,PIO_INPUT,jtag_APinDescription[ulPin].ulPin,PIO_PULLUP);
+            break;
+        case OUTPUT:
+            PIO_Configure(jtag_APinDescription[ulPin].pPort,PIO_OUTPUT_0,jtag_APinDescription[ulPin].ulPin,jtag_APinDescription[ulPin].ulPinConfiguration );
+            /* if all pins are output, disable PIO Controller clocking, reduce power consumption */
+            if ( jtag_APinDescription[ulPin].pPort->PIO_OSR == 0xffffffff)
+            {
+                pmc_disable_periph_clk(jtag_APinDescription[ulPin].ulPeripheralId);
+            }
+            break;
+        default:
+            break;
+    }
+}
+
+
+// On hardware rev 4.2 these are the three option pins, enabled an inputs with pull ups
+// Port B bit 24 is position 1
+// Port B bit 23 is position 2
+// Port B bit 22 is position 3
+PinDescription opt_APinDescription[]=
+{
+  { PIOB, PIO_PB24,   ID_PIOB, PIO_PERIPH_B, PIO_DEFAULT, PIN_ATTR_TIMER, NO_ADC, NO_ADC, NOT_ON_PWM,  NOT_ON_TIMER},
+  { PIOB, PIO_PB23,   ID_PIOB, PIO_PERIPH_B, PIO_DEFAULT, PIN_ATTR_TIMER, NO_ADC, NO_ADC, NOT_ON_PWM,  NOT_ON_TIMER},
+  { PIOB, PIO_PB22,   ID_PIOB, PIO_PERIPH_B, PIO_DEFAULT, PIN_ATTR_TIMER, NO_ADC, NO_ADC, NOT_ON_PWM,  NOT_ON_TIMER},
+};
+
+void initOptionPins(void)
+{
+   // Init the option input pins
+   PIO_Configure(opt_APinDescription[0].pPort,PIO_INPUT,opt_APinDescription[0].ulPin,PIO_PULLUP);
+   PIO_Configure(opt_APinDescription[1].pPort,PIO_INPUT,opt_APinDescription[1].ulPin,PIO_PULLUP);
+   PIO_Configure(opt_APinDescription[2].pPort,PIO_INPUT,opt_APinDescription[2].ulPin,PIO_PULLUP);
+}
+
+int8_t readOptionPins(void)
+{
+  int8_t val=0; 
+  
+  if(PIO_Get(opt_APinDescription[0].pPort, PIO_INPUT, opt_APinDescription[0].ulPin) == 1) val |= 1;
+  if(PIO_Get(opt_APinDescription[1].pPort, PIO_INPUT, opt_APinDescription[1].ulPin) == 1) val |= 2;
+  if(PIO_Get(opt_APinDescription[2].pPort, PIO_INPUT, opt_APinDescription[2].ulPin) == 1) val |= 4;
+  return val;
+}
+
+void ReportOption(void)
+{
+  serial->println(readOptionPins());
+}
 
 //
 // DMA routines

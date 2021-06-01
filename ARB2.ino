@@ -11,7 +11,7 @@
 #include <MIPStimer.h>
 #include <Parallel.h>
 #include <SerialBuffer.h>
-
+#include <PlayXSVFJTAGArduino.h>
 //
 // File: ARB2
 //
@@ -166,6 +166,14 @@
 //          - Note version is 2.11 not 2.10 due to how the numeric part of the
 //            version number is use. The versions should have reall been .000
 //            format.
+// Version 2.12, April 17, 2021
+//          - Add JTAG programming support for rev 4.2 boards
+//          - Added function to read the option port on rev 4.2. This port is not currently used.
+// Version 2.13, May 17, 2021
+//          - Fixed a bug that would not allow software start of compression mode
+//          - Added additional serial commands.
+// Version 2.14, May 27, 2021
+//          - Added the TWI command function
 //
 // Implementation notes for programming through the TWI interface, all items are done
 //      1.) Write a mover application that is located at the start of flash bank 1. This app, when called
@@ -215,8 +223,8 @@ MIPStimer ARBclk(3);        // This timer is used to generate the clock in inter
 MIPStimer ALTtmr(4);        // This timer is used to det the delay and duration of the alternut waveform.
                             // User 10.5MHz, delay and playtime are in mS.
 
-char Version[] = "\nARB Version 2.11, Feb 14, 2021";
-float fVersion = 2.11;
+char Version[] = "\nARB Version 2.14, May 27, 2021";
+float fVersion = 2.14;
 
 SerialBuffer sb;
 
@@ -783,6 +791,7 @@ void receiveEvent(int howMany)
   int8_t b;
   int16_t shortint;
   float fval;
+  unsigned long tm;
 
   while (Wire.available() != 0)
   {
@@ -798,6 +807,31 @@ void receiveEvent(int howMany)
       {
         case TWI_SERIAL:
           serial = &sb;
+          break;
+        case TWI_CMD:
+          // Process command using the serial processor
+          sb.clear();
+          serial = &sb;
+          tm = millis();
+          // Read the ascii string and place in the serial processor ring buffer.
+          while(true)
+          {
+            if(Wire.available() != 0)
+            {
+              cmd = Wire.read();
+              PutCh(cmd);
+              if(cmd == '\n') break;
+            } 
+            if((tm+250) < millis())
+            {
+              // Timeout, so put a \n in the command ring buffer and exit
+              PutCh('\n');
+              break;
+            }
+          }
+          // Process any commands fill sb buffer with results
+          while (RB_Commands(&RB) > 0) ProcessSerial();
+          serial = &Serial;
           break;
         case TWI_SET_MODE:
           i = ReadUnsignedByte();
@@ -1416,6 +1450,7 @@ void setup()
   // Set the external clock source the MIPS
   pinMode(ExtClockSel,OUTPUT);
   digitalWrite(ExtClockSel,LOW);
+  initOptionPins();
   // Setup the resync timer
   ResetTMR.stop();
   ResetTMR.begin();
@@ -1530,7 +1565,7 @@ void setup()
 }
 
 // This function process all the serial IO and commands
-void ProcessSerial(bool scan = true)
+void ProcessSerial(bool scan)
 {
   // Put serial received characters in the input ring buffer
   if (SerialUSB.available() > 0)
@@ -1658,7 +1693,7 @@ void loop()
        }
        else ARBparms.CompressEnable = false;
      }
-     else ARBparms.CompressEnable = false;
+     //else ARBparms.CompressEnable = false;
   }
   // process any serial commands
   ProcessSerial();
@@ -2065,6 +2100,12 @@ void DebugFunction(void)
 {
   int i;
 
+ARBparms.CompressEnable = true;
+WorkingOrder = ARBparms.Order;
+return;
+
+
+
   for (i = 0; i < 32; i++)
   {
     serial->println(ARBwaveform[i]);
@@ -2104,6 +2145,27 @@ void GetStatus(void)
     default:
       break;
   }
+}
+
+void SetCompressor(char *value)
+{
+  String sToken;
+
+  sToken = value;
+  if((sToken != "TRUE") && (sToken != "FALSE"))
+  {
+     SetErrorCode(ERR_BADARG);
+     SendNAK;    
+     return;
+  }
+  SendACK;
+  if(sToken == "TRUE")
+  {
+    ARBparms.CompressEnable = true;
+    WorkingOrder = ARBparms.Order;
+    return;
+  }
+  ARBparms.CompressEnable = false;
 }
 
 // True = external clock
@@ -2257,3 +2319,23 @@ void SetCompLine(int line)
     CompressPin = 22;
   }
 }
+
+void JTAGplay(void)
+{
+#ifndef SERIAL_RX_BUFFER_SIZE
+#define SERIAL_RX_BUFFER_SIZE 64
+#endif /* SERIAL_RX_BUFFER_SIZE */
+
+  SerialUSB.flush();
+  PlayXSVFJTAGArduino p(SerialUSB, SERIAL_RX_BUFFER_SIZE, TMS, TDI, TDO, TCK, VREF);
+  p.play();
+  SerialUSB.flush();
+  delay(5000);
+  SerialUSB.println("Q0");
+  delay(1000);
+  SerialUSB.println("\nJTAG operation finished!");
+  SerialUSB.println("ARB module is rebooting!");
+  SerialUSB.println("Port connection will be lost");
+  delay(1000);
+  Software_Reset();
+ }

@@ -69,6 +69,8 @@ extern uint8_t DACchanBits[8];
 #define TWI_LOAD_UPDATES    0x26      // Updated values are loaded into the hardware via this command
 
 #define TWI_SERIAL             0x27   // This command enables the TWI port to process serial commands
+#define TWI_CMD                0x7F   // This command sends a ascii string to the serial command processor
+                                      // and returns the response through the TWI interface
 #define TWI_SET_COMP_ORDER_EX  0x28   // Set compression order, word value, 0 to 65535 
 
 // The following command support amplitude and frequence scanning
@@ -224,5 +226,7 @@ typedef struct
   bool    ApplyRevAuxV = false;
   float   RevAuxV = 0.0;
 } ARB_PARMS;
+
+void ProcessSerial(bool scan = true);
 
 #endif /* ARB_H_ */

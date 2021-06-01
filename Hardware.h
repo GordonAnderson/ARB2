@@ -1,6 +1,12 @@
 #ifndef Hardware_h
 #define Hardware_h
 
+#define  TMS    0
+#define  TDI    1
+#define  TDO    2
+#define  TCK    3
+#define  VREF   4
+
 // DMA variables and structures
 #define DMAC_MEMCH 3
 
