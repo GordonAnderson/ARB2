@@ -27,7 +27,7 @@ extern uint8_t DACchanBits[8];
 #define ENQ   5
 
 // TWI commands and constants
-#define TWI_SET_FREQ        0x01      // Set frequency, Hz, 16 bit unsigned word
+#define TWI_SET_FREQ        0x01      // Set frequency, Hz, 24 bit unsigned word
 #define TWI_SET_WAVEFORM    0x02      // Set waveform type, 8 bit unsigned type
 #define TWI_SET_REF         0x03      // Set reference defines p-p voltage, 16 bit unsigned, 0 to 4095
 #define TWI_SET_OFFSET      0x04      // Set offset, 16 bit unsigned, 0 to 4095
@@ -107,6 +107,12 @@ extern uint8_t DACchanBits[8];
 #define TWI_SET_SYNCLINE    0x46      // Allows defining the hardware line used for sync control, 1 or 2, 1 = default
 #define TWI_SET_COMPLINE    0x47      // Allows defining the hardware line used for Compress control, 1 or 2, 2 = default
 
+#define TWI_SET_FWDPS       0x48      // Allows defining the forward phase shift, float, degrees
+#define TWI_SET_REVPS       0x49      // Allows defining the reverse phase shift, float, degrees
+
+#define TWI_SET_AFRQENA     0x4A      // Enable frequency change in compress or alternate waveform mode, byte: true if enabled
+#define TWI_SET_AFRQ        0x4B      // Compress or alternate frequency, 24 bit int.
+
 #define TWI_READ_REQ_FREQ   0x81      // Returns requested frequency
 #define TWI_READ_ACT_FREQ   0x82      // Returns actual frequency
 #define TWI_READ_STATUS     0x83      // Returns status byte (ARB system status)
@@ -153,7 +159,8 @@ enum ARBmodes
 
 typedef struct
 {
-  int       rev = 2;
+  int       rev = 3;                 // This rev values does not hold the firmware revision number. This
+                                     // is used as a flag to define different firmware behaviores
   ARBmodes  Mode = TWAVEmode; 
   // Signature
   int     signature = 0xA55AE99E;    // This is used to validate a restore from flash function 
@@ -217,14 +224,27 @@ typedef struct
   bool    AlternateHardware = false;
   byte    AltHwdMode = 0;                       // External alt enable mode, 0=level active high, 1 = pos edge, 2 = neg edge
   float   TriggerDly = 0;                       // Delay in mS when in pos or neg edge mode
-  float   PlayDuration = 10;                    // Duration in mS when in pos of neg edge mode
+  float   PlayDuration = 10;                    // Duration in mS when in pos or neg edge mode
   float   Fixed[8] = {100,0,0,0,0,0,0,100};     // Fixed voltage profile
   bool    AlternateRngEna   = false;
   float   AlternateRng      = 10.0;
   byte    AltWaveform = 1;
+  // Added alt freq 5/11/24
+  bool    AlternateFreqEna  = false;
+  int     AltFreq = 10000;
   // Reverse direction Aux voltage
   bool    ApplyRevAuxV = false;
   float   RevAuxV = 0.0;
+  // The following variable are used when rev is set to 3 or higher
+  float   RefMultiplier = 0.545;
+  float   OFFm = 26.37, OFFb = -1515.29;                   // Offset readback calibration parameters
+  float   AUXm = 26.15, AUXb = -1515.13;                   // Aux readback calibration parameters
+  // Twave read back calibration parameters
+  float   TWRBm[8] = {26.24,26.24,26.24,26.24,26.24,26.24,26.24,26.24}; 
+  float   TWRBb[8] = {-1512.93,-1512.93,-1512.93,-1512.93,-1512.93,-1512.93,0-1512.93,-1512.93}; 
+  // Forward and reverse phase shifts
+  float   fwdPS = 0;
+  float   revPS = 0;
 } ARB_PARMS;
 
 void ProcessSerial(bool scan = true);

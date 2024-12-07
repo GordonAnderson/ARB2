@@ -23,36 +23,49 @@ void CalibrateAux(void)
   char   *Token;
   String sToken;
   float  val1,val2,m,b;
+  float  rb1,rb2;
 
+  digitalWrite(MUXSEL,HIGH);
   serial->println("Calibrate Aux output, monitor with a voltmeter.");
   serial->println("Enter values when prompted.");
   // Set output to 0
   WriteWFaux(0);
   // Ask for actual value
   serial->print("Enter actual output value: ");
-  while((Token = GetToken(true)) == NULL) ProcessSerial(false);;
+  while((Token = GetToken(true)) == NULL) ProcessSerial(false);
   serial->println(Token);
   sToken = Token;
-  val1 = sToken.toFloat(); 
-  while((Token = GetToken(true)) != NULL) ProcessSerial(false);;  
+  val1 = sToken.toFloat();
+  if(ARBparms.rev >= 3) rb1 = readADC(AUX_VNEG,10);
+  while((Token = GetToken(true)) != NULL) ProcessSerial(false);  
   // Set output to 25
   WriteWFaux(25);
   // Ask for actual value
   serial->print("Enter actual output value: ");
-  while((Token = GetToken(true)) == NULL) ProcessSerial(false);;
+  while((Token = GetToken(true)) == NULL) ProcessSerial(false);
   sToken = Token;
   serial->println(Token);
   val2 = sToken.toFloat();
-  while((Token = GetToken(true)) != NULL) ProcessSerial(false);;  
+  if(ARBparms.rev >= 3) rb2 = readADC(AUX_VNEG,10);
+  while((Token = GetToken(true)) != NULL) ProcessSerial(false);  
   // Calculate calibration parameters and apply
   m = (25.0 * ARBparms.AuxDACm) / (val2-val1);
   b = ARBparms.AuxDACb - val1 * ARBparms.AuxDACm;
-  serial->print("m = ");
-  serial->println(m);
-  serial->print("b = ");
-  serial->println(b);
+  serial->println("Calibration parameters:");
+  serial->print("m = "); serial->println(m);
+  serial->print("b = "); serial->println(b);
   ARBparms.AuxDACm = m;
   ARBparms.AuxDACb = b;
+  if(ARBparms.rev >= 3)
+  {
+    m = (rb2-rb1) / (val2-val1);
+    b = val1 * m - rb1;
+    serial->println("Readback calibration parameters:");
+    serial->print("m = "); serial->println(m);
+    serial->print("b = "); serial->println(b);
+    ARBparms.AUXm = m;
+    ARBparms.AUXb = b; 
+  }
 }
 
 // This function enables calibration of the offset channel.
@@ -61,36 +74,49 @@ void CalibrateOffset(void)
   char   *Token;
   String sToken;
   float  val1,val2,m,b;
+  float  rb1,rb2;
 
+  digitalWrite(MUXSEL,HIGH);
   serial->println("Calibrate offset output, monitor with a voltmeter.");
   serial->println("Enter values when prompted.");
   // Set output to 0
   WriteWFoffset(0);
   // Ask for actual value
   serial->print("Enter actual output value: ");
-  while((Token = GetToken(true)) == NULL) ProcessSerial(false);;
+  while((Token = GetToken(true)) == NULL) ProcessSerial(false);
   serial->println(Token);
   sToken = Token;
   val1 = -sToken.toFloat(); 
-  while((Token = GetToken(true)) != NULL) ProcessSerial(false);;  
+  if(ARBparms.rev >= 3) rb1 = readADC(OFF_VPOS,10);
+  while((Token = GetToken(true)) != NULL) ProcessSerial(false);  
   // Set output to 25
   WriteWFoffset(25);
   // Ask for actual value
   serial->print("Enter actual output value: ");
-  while((Token = GetToken(true)) == NULL) ProcessSerial(false);;
+  while((Token = GetToken(true)) == NULL) ProcessSerial(false);
   sToken = Token;
   serial->println(Token);
   val2 = -sToken.toFloat();
-  while((Token = GetToken(true)) != NULL) ProcessSerial(false);;  
+  if(ARBparms.rev >= 3) rb2 = readADC(OFF_VPOS,10);
+  while((Token = GetToken(true)) != NULL) ProcessSerial(false);  
   // Calculate calibration parameters and apply
   m = (25.0 * ARBparms.OffsetDACm) / (val1-val2);
   b = ARBparms.OffsetDACb + val1 * ARBparms.OffsetDACm;
-  serial->print("m = ");
-  serial->println(m);
-  serial->print("b = ");
-  serial->println(b);
+  serial->println("Calibration parameters:");
+  serial->print("m = "); serial->println(m);
+  serial->print("b = "); serial->println(b);
   ARBparms.OffsetDACm = m;
   ARBparms.OffsetDACb = b;  
+  if(ARBparms.rev >= 3)
+  {
+    m = (rb2-rb1) / (val2-val1);
+    b = val1 * m - rb1;
+    serial->println("Readback calibration parameters:");
+    serial->print("m = "); serial->println(m);
+    serial->print("b = "); serial->println(b);
+    ARBparms.OFFm = m;
+    ARBparms.OFFb = b; 
+  }
 }
 
 // Calibration of the range output uses the first ARB output channel. Monitor
@@ -110,11 +136,11 @@ void CalibrateRange(void)
   WriteWFrange(50.0);
   // Ask for actual value
   serial->print("Enter actual output value: ");
-  while((Token = GetToken(true)) == NULL) ProcessSerial(false);;
+  while((Token = GetToken(true)) == NULL) ProcessSerial(false);
   serial->println(Token);
   sToken = Token;
   val1 = sToken.toFloat(); 
-  while((Token = GetToken(true)) != NULL) ProcessSerial(false);;  
+  while((Token = GetToken(true)) != NULL) ProcessSerial(false);  
   // Calculate calibration parameters and apply
   m = (25.0 * ARBparms.GainDACm) / val1;
   b = 0;
@@ -133,6 +159,7 @@ void CalibrateChannel(int channel)
   char   *Token;
   String sToken;
   float  val1,val2,m,b;
+  float  rb1,rb2;
 
 //   serial->println("Calibrate ARB amp board bias output, monitor ARB channel 1 with a voltmeter.");
 //  serial->println("Enter DAC counts to adjust channel 1 to 0 volts, enter -1 when done.");
@@ -157,6 +184,7 @@ void CalibrateChannel(int channel)
   serial->println(Token);
   sToken = Token;
   val1 = sToken.toFloat(); 
+  if(ARBparms.rev >= 3) rb1 = readTWreadback(channel);
   while((Token = GetToken(true)) != NULL) ProcessSerial(false);  
   // Set to 25 volts and ask for actual value
   SetDACchannelR(channel,245);
@@ -165,16 +193,26 @@ void CalibrateChannel(int channel)
   serial->println(Token);
   sToken = Token;
   val2 = sToken.toFloat(); 
+  if(ARBparms.rev >= 3) rb2 = readTWreadback(channel);
   while((Token = GetToken(true)) != NULL) ProcessSerial(false);  
   // Calculate calibration parameters and apply
   m = 118.0 / ((val2-val1) * 4.0);
   b = 127 - val1 * m * 4.0;
-  serial->print("m = ");
-  serial->println(m);
-  serial->print("b = ");
-  serial->println(b);
+  serial->println("Calibration parameters:");
+  serial->print("m = "); serial->println(m);
+  serial->print("b = "); serial->println(b);
   ARBparms.DACgains[channel] = m;
   ARBparms.DACoffsets[channel] = b;
+  if(ARBparms.rev >= 3)
+  {
+    m = (rb2-rb1) / (val2-val1);
+    b = val1 * m - rb1;
+    serial->println("Readback calibration parameters:");
+    serial->print("m = "); serial->println(m);
+    serial->print("b = "); serial->println(b);
+    ARBparms.TWRBm[channel] = m;
+    ARBparms.TWRBb[channel] = b; 
+  }
 }
 
 // This command is used to write calibration parameters to a DAC channel

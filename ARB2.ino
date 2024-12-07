@@ -39,6 +39,20 @@
 //  * Both TWI and serial commands allow control of module
 //  * Serial commands also allow calibration and configuration of module
 //
+//  Starting with hardware rev 4.2 the three posiition option jumper block was added.
+//  The following options are enabled if the shorting jumper is installed
+//  Position    Function
+//  1           Use DACoffsetA output to set the ARB AMP reference level. This referece 
+//              level is set to the range value * 0.545. 
+//  2           Installed when LTC13801 mux is used for read backs. If not installed AD728 mux
+//              is used.  
+//  3           Not used
+//
+//  The ARBparms.rev flag sets the firmware behavior
+//    - If the rev value is >= 3 then the readback calibration functions are enabled. In
+//      this case the calibration function will also calibrate the readback values. Also the
+//      Reference level multiplier (0.545 by default) is adjustable.
+//
 // Revision history:
 //
 // Version 1.1, July 30, 2016
@@ -174,6 +188,40 @@
 //          - Added additional serial commands.
 // Version 2.14, May 27, 2021
 //          - Added the TWI command function
+// Version 2.15, Nov 22, 2021
+//          - Fixed error in TWI command for stop sweep frequency, it was mistakenly written to the start freq
+//          - Process sweep function now exits if there has been no change in time (milli-seconds) detected
+// Version 2.16, Feb 11, 2022
+//          - Added support for the rev 5.0 ARBs and 4.0 ARB AMPS
+//          - OPT jumper position 1 install for rev 5.0 ARB
+//          - Added readback report functions for AUX, Offset, and TW outputs.
+// Version 2.17, June 20, 2022
+//          - Added OPT jumper position 2 install for LTC13801 read back mux.
+//          - Added the rev flag to enable readback calibration is rev >= 3. Also enable reference multiplier
+// Version 2.18, Aug 16, 2022
+//          - Fixed a bug that caused ARB amplitude updates to fail. This happened because the amplitude was constantly 
+//            updating. The change is on line 209 in the hardware file. Also disabled interrupts around the DAC update
+//            SPI commands.
+// Version 2.19, Aug 22, 2022
+//          - The alternate waveform ARB waveform type was not shifting phase on the 8 channels. It now shifts phase
+//            and uses the direction flag.
+// Version 2.21, Nov 11, 2022
+//          - Updated the alt waveform range to minimize lantency
+//          - Added alt waveform type current, no change
+// Version 2.22, Mar 11, 2023
+//          - Removed the interrupt disable that was around the range voltage update. This was causing the 
+//            DMA to stall due to missing interrupts
+// Version 2.23, Dec 16, 2023
+//          - Updated AD5592writeDAC to queue up a request if called when busy.
+//          - Force update of ARB buffer when new waveform is downloaded
+// Version 2.24, Dec 18, 2023
+//          - Added fwd and rev phuase shift 
+//          - Added phase shift commands
+//          - Added TWI phase shift commands
+// Version 2.25, April 9, 2024
+//          - Ignore freq change request if change is in process
+// Version 2.26, May 11, 2024
+//          - Added alternate waveform frequency
 //
 // Implementation notes for programming through the TWI interface, all items are done
 //      1.) Write a mover application that is located at the start of flash bank 1. This app, when called
@@ -223,8 +271,8 @@ MIPStimer ARBclk(3);        // This timer is used to generate the clock in inter
 MIPStimer ALTtmr(4);        // This timer is used to det the delay and duration of the alternut waveform.
                             // User 10.5MHz, delay and playtime are in mS.
 
-char Version[] = "\nARB Version 2.14, May 27, 2021";
-float fVersion = 2.14;
+char Version[] = "\nARB Version 2.26, May 11, 2024";
+float fVersion = 2.26;
 
 SerialBuffer sb;
 
@@ -257,7 +305,7 @@ char    VectorString[200] = "";              // Contains a vector received from 
 
 #define CLKSperMS               656.25
 
-byte    AuxDACupdate = UpdateAll;
+volatile byte    AuxDACupdate = UpdateAll;
 
 bool    FreqUpdate = true;
 bool    VoltageTestEnable = false;
@@ -298,6 +346,7 @@ void SaveSettings(void)
   ARBparms.AlternateEnable = false;
   ARBparms.AlternateHardware = false;
   ARBparms.AlternateRngEna = false;
+  ARBparms.AlternateFreqEna = false;
 
   noInterrupts();
   if (dueFlashStorage.writeAbs((uint32_t)NonVolStorage, (byte *)&ARBparms, sizeof(ARB_PARMS)))
@@ -340,6 +389,7 @@ void RestoreSettings(void)
     ARBparms.AlternateEnable = false;
     ARBparms.AlternateHardware = false;
     ARBparms.AlternateRngEna = false;
+    ARBparms.AlternateFreqEna = false;
     ARBparms.ApplyRevAuxV = false;
     ARBparms.RevAuxV = 0.0;
     return;
@@ -389,11 +439,15 @@ void SetARBchannels(float fval)
 // This function uses the waveform buffer to fill the DAC buffer and determine the phase shifts
 void FillDACbuffer(void)
 {
-  int   i, j;
+  unsigned int   i, j, k;
+  int ps;
 
+  if(ARBparms.Direction) ps = (ARBparms.fwdPS * ARBparms.ppp)/360;
+  else ps =  (ARBparms.revPS * ARBparms.ppp)/360;
   // Fill the first period
-  for (i = 0; i < ARBparms.ppp; i++)
+  for (k = 0; k < ARBparms.ppp; k++)
   {
+    i = (k + ps) % ARBparms.ppp;
     if (!ARBparms.Direction) for (j = 0; j < CHANS; j++) b[i * CHANS + Ch2Index(j)] = Waveform[j][i];
     else for (j = 0; j < CHANS; j++) b[i * CHANS + Ch2Index(j)] = WaveformR[j][i];
   }
@@ -424,13 +478,14 @@ void FillDACbuffer(void)
 // 7      7
 // ((i*2) + (i>>4))
 
-void SetWaveformType(int wft)
+void SetWaveformType(int wft, bool force=false)
 {
   float      f1,f2;
   int        i;
   int        ch;
   static int last_wft=-1;
 
+  if(force) last_wft = -1;
   if(wft != last_wft) switch (wft)
   {
     case TWI_WAVEFORM_SIN:
@@ -565,6 +620,10 @@ int SetFrequency(int freq)
 {
   int clkdiv;
   int actualF;
+  int CM;
+
+  CM = digitalRead(ClockMode);
+  digitalWrite(ClockMode,HIGH);
 
   DMAclk.stop();                     // Stop the current clock
   ARBclk.stop();                     // Stop the current clock
@@ -598,6 +657,7 @@ int SetFrequency(int freq)
     }
     ARBclk.start(-1, 0, false);
   }
+  digitalWrite(ClockMode,CM);
   return actualF;
 }
 
@@ -853,6 +913,7 @@ void receiveEvent(int howMany)
         case TWI_SET_FREQ:
           i = ReadUnsignedWord();
           j = ReadUnsignedByte();
+          if(FreqUpdate) break;
           if ((i != -1) && (j != -1))
           {
             ARBparms.RequestedFreq = i | (j << 16);
@@ -897,7 +958,7 @@ void receiveEvent(int howMany)
           // If the mode is TWAVE and the waveform is ARB then reload the ARB buffers
           if ((ARBparms.Mode == TWAVEmode) && (ARBparms.wft == TWI_WAVEFORM_ARB))
           {
-            SetWaveformType(ARBparms.wft);
+            SetWaveformType(ARBparms.wft,true);
           }
           break;
         case TWI_SET_RANGE:
@@ -1034,6 +1095,14 @@ void receiveEvent(int howMany)
             else VoltageTestEnable = false;
           }
           break;
+        case TWI_SET_FWDPS:
+          if (!ReadFloat(&fval)) break;
+          ARBparms.fwdPS;
+          break;
+        case TWI_SET_REVPS:
+          if (!ReadFloat(&fval)) break;
+          ARBparms.revPS;
+          break;
         case TWI_UPDATE_AUX:
           if (!ReadFloat(&fval)) break;
           ARBparms.VoltageAux = fval;
@@ -1058,7 +1127,7 @@ void receiveEvent(int howMany)
           break;
         case TWI_SWPSTOPFREQ:
           if (!ReadInt(&i)) break;
-          fSweep.StartFreq = i;
+          fSweep.StopFreq = i;
           break;
         case TWI_SWPSTARTV:
           if (!ReadFloat(&fval)) break;
@@ -1107,7 +1176,7 @@ void receiveEvent(int howMany)
           break;
         case TWI_SET_AWFRM:   // Define alternate waveform, byte: 1=compress (default),2=reverse,3=arb,4=fixed
           i = ReadUnsignedByte();
-          if((i>=1) && (i<=4))
+          if((i>=1) && (i<=5))
           {
             // Set the alternate waveform in the buffer
             ARBparms.AltWaveform = i;
@@ -1125,6 +1194,19 @@ void receiveEvent(int howMany)
         case TWI_SET_ARNG:    // Compress or alternate range, float.
           if (!ReadFloat(&fval)) break;
           ARBparms.AlternateRng = fval;
+          break;
+        case TWI_SET_AFRQENA:  // Enable alternate waveform frequency
+          i = ReadUnsignedByte();
+          if (i != -1)
+          {
+            if (i == 1) ARBparms.AlternateFreqEna = true;
+            else ARBparms.AlternateFreqEna = false;
+          }
+          break;
+        case TWI_SET_AFRQ:    // Set alternate waveform frequency
+          i = ReadUnsignedWord();
+          j = ReadUnsignedByte();
+          if ((i != -1) && (j != -1)) ARBparms.AltFreq = i | (j << 16);
           break;
         case TWI_SET_FIXED:   // Set fixed voltage profile value, byte,float. byte=index, 0 thru 7. float = value in %
           i = ReadUnsignedByte();
@@ -1220,9 +1302,10 @@ void receiveEvent(int howMany)
 //                2 = reverse
 //                3 = arb
 //                4 = fixed
+//                5 = Current waveform, no change
 void SetAlternateWaveform(int type)
 {
-  int   i, j;
+  int   i, j, windex;
 
    switch(type)
    {
@@ -1235,7 +1318,6 @@ void SetAlternateWaveform(int type)
          break;
       case 2:
          // Fill the next period with the reverse dir of the previous period
-         // rev phase by swapping 1:7, 2:6, 3:5
          // This code violates the calibration and needs to be rewritten
          for (i = 0; i < ARBparms.ppp; i++)
          {
@@ -1256,7 +1338,14 @@ void SetAlternateWaveform(int type)
          // Move arb waveform into the second period buffer
          for (i = 0; i < ARBparms.ppp; i++)
          {
-            for (j = 0; j < CHANS; j++) b[(i + ARBparms.ppp) * CHANS + Ch2Index(j)] = ARBchannelValue2Counts(j, ARBwaveform[i]);
+            for (j = 0; j < CHANS; j++) 
+            {
+              if(ARBparms.Direction) windex = i + j * (ARBparms.ppp / 8);
+              else windex = i - j * (ARBparms.ppp / 8);
+              if(windex >= ARBparms.ppp) windex = windex - ARBparms.ppp;
+              if(windex < 0) windex = ARBparms.ppp + windex;
+              b[(i + ARBparms.ppp) * CHANS + Ch2Index(j)] = ARBchannelValue2Counts(j, ARBwaveform[windex]);
+            }
          }
          break;
       case 4:
@@ -1266,6 +1355,21 @@ void SetAlternateWaveform(int type)
             for (j = 0; j < CHANS; j++) b[(i + ARBparms.ppp) * CHANS + Ch2Index(j)] = ARBchannelValue2Counts(j, ARBparms.Fixed[j]);
          }
          break;
+      case 5:
+         for (i = 0; i < ARBparms.ppp; i++)
+         {
+            for (j = 0; j < CHANS; j++)
+            {
+              if(j==0)       b[(i + ARBparms.ppp) * CHANS + Ch2Index(0)] = b[i * CHANS + Ch2Index(j)];
+              else if(j==1)  b[(i + ARBparms.ppp) * CHANS + Ch2Index(1)] = b[i * CHANS + Ch2Index(j)];
+              else if(j==2)  b[(i + ARBparms.ppp) * CHANS + Ch2Index(2)] = b[i * CHANS + Ch2Index(j)];
+              else if(j==3)  b[(i + ARBparms.ppp) * CHANS + Ch2Index(3)] = b[i * CHANS + Ch2Index(j)];
+              else if(j==4)  b[(i + ARBparms.ppp) * CHANS + Ch2Index(4)] = b[i * CHANS + Ch2Index(j)];
+              else if(j==5)  b[(i + ARBparms.ppp) * CHANS + Ch2Index(5)] = b[i * CHANS + Ch2Index(j)];
+              else if(j==6)  b[(i + ARBparms.ppp) * CHANS + Ch2Index(6)] = b[i * CHANS + Ch2Index(j)];
+              else if(j==7)  b[(i + ARBparms.ppp) * CHANS + Ch2Index(7)] = b[i * CHANS + Ch2Index(j)];
+            }
+         }
       default:
          break;
    }
@@ -1309,6 +1413,8 @@ void ARBline2ISR(void)
   static Pio *pio = g_APinDescription[ARBline2].pPort;
   static uint32_t pin =g_APinDescription[ARBline2].ulPin;
 
+//if(ARBline2stateISR != NULL) ARBline2stateISR(HIGH);
+//return;
   // If this is a detection of a pulse event it will only be 1uS wide, so we delay 1uS
   // and if there is no pin state change then this must be a pulse event
   delayMicroseconds(1);
@@ -1323,7 +1429,7 @@ void ARBline2ISR(void)
     return;
   }
   PinState = digitalRead(ARBline2);
-  // If here then the state of ARBlin2 has changed.
+  // If here then the state of ARBline2 has changed.
   if(ARBline2stateISR != NULL) ARBline2stateISR(PinState);
 }
 
@@ -1520,7 +1626,7 @@ void setup()
   Wire.onReceive(receiveEvent);        // register event
   Wire.onRequest(requestEvent);
   Wire1.begin();
-  Wire1.setClock(400000);
+  Wire1.setClock(100000);
   sb.begin();
   // Default set to ARB disabled
   ARBparms.Enabled = false;
@@ -1562,6 +1668,9 @@ void setup()
   ALTtmr.enableTrigger();
   // Turn on power supplies for ARB_AMP
   digitalWrite(PowerEnable, HIGH);
+  // Set the MUX default to HIGH
+  pinMode(MUXSEL,OUTPUT);
+  digitalWrite(MUXSEL,HIGH);
 }
 
 // This function process all the serial IO and commands
@@ -1626,6 +1735,7 @@ void ProcessSweep(void)
   float         rnf, rnv;
 
   if (fSweep.State == SS_IDLE) return;
+  if(RightNow == millis()) return;
   RightNow = millis();
   if (fSweep.State == SS_START)
   {
@@ -1707,8 +1817,8 @@ void loop()
   }
   if (FreqUpdate)
   {
-    FreqUpdate = false;
     ARBparms.ActualFreq = SetFrequency(ARBparms.RequestedFreq);
+    FreqUpdate = false;
   }
   if (AuxDACupdate != 0)
   {
@@ -2100,6 +2210,9 @@ void DebugFunction(void)
 {
   int i;
 
+  DMArestart();
+  return;
+
 ARBparms.CompressEnable = true;
 WorkingOrder = ARBparms.Order;
 return;
@@ -2261,7 +2374,7 @@ void GetFixedValue(int index)
 
 void SetAltWaveFrm(int wfrm)
 {
-  if((wfrm < 1) || (wfrm > 4))
+  if((wfrm < 1) || (wfrm > 5))
   {
      SetErrorCode(ERR_BADARG);
      SendNAK;    
@@ -2339,3 +2452,34 @@ void JTAGplay(void)
   delay(1000);
   Software_Reset();
  }
+
+void reportAUX(void)
+{
+  digitalWrite(MUXSEL,HIGH);
+  delay(1);
+  SendACKonly;
+  if(ARBparms.rev < 3) serial->println(((float)readADC(AUX_VNEG,10) - 1515.13)/26.15);
+  else serial->println(((float)readADC(AUX_VNEG,10) + ARBparms.AUXb)/ARBparms.AUXm);
+}
+
+void reportOFF(void)
+{
+  digitalWrite(MUXSEL,HIGH);
+  delay(1);
+  SendACKonly;
+  if(ARBparms.rev < 3) serial->println(-(((float)readADC(OFF_VPOS,10) - 1515.29)/26.37));
+  else serial->println(-(((float)readADC(OFF_VPOS,10) + ARBparms.OFFb)/ARBparms.OFFm));
+}
+
+void reportTW(int chan)
+{
+  if((chan < 1) || (chan > 8))
+  {
+     SetErrorCode(ERR_BADARG);
+     SendNAK;    
+     return;
+  }
+  SendACKonly;
+  if(ARBparms.rev < 3) serial->println(((float)readTWreadback(chan-1) - 1512.93)/26.24);
+  else serial->println(((float)readTWreadback(chan-1) + ARBparms.TWRBb[chan-1])/ARBparms.TWRBm[chan-1]);
+}

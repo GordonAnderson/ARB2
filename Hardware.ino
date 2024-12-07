@@ -149,6 +149,7 @@ void DMAC_Handler(void)
 {
   static uint32_t i;
   static bool     lastAlt = false;
+  static int      CM;
 
 if(Bcount == -1) 
 {
@@ -198,16 +199,34 @@ if(Bcount == -1)
     { 
       lliA[0].SADDR = (uint32_t)&(buffer[ARBparms.ppp * CHANS / 4]);
       lliB[0].SADDR = (uint32_t)&(buffer[ARBparms.ppp * CHANS / 4]); 
-      if((!lastAlt) && (ARBparms.AlternateRngEna))  AuxDACupdate |= UpdateAltRange;
+      if((!lastAlt) && (ARBparms.AlternateRngEna))  WriteWFrange(ARBparms.AlternateRng); // AuxDACupdate |= UpdateAltRange;, 11/11/22
+      if((!lastAlt) && (ARBparms.AlternateFreqEna))
+      {
+
+        // If here set the frequency to the alternate value
+        CM = digitalRead(ClockMode);
+        digitalWrite(ClockMode,HIGH);
+        SetFrequency(ARBparms.AltFreq);
+        digitalWrite(ClockMode,LOW);
+      }
       lastAlt = true;   
     }
     else
     {
        lliA[0].SADDR = (uint32_t)&(buffer[0]);
        lliB[0].SADDR = (uint32_t)&(buffer[0]);
-       //if((lastAlt) && (ARBparms.AlternateRngEna)) AuxDACupdate |= UpdateVoltageRange;
-       AuxDACupdate |= UpdateVoltageRange;
-       lastAlt = false;          
+       if((lastAlt) && (ARBparms.AlternateRngEna)) WriteWFrange(ARBparms.VoltageRange); //AuxDACupdate |= UpdateVoltageRange;, 11/11/22
+//       AuxDACupdate |= UpdateVoltageRange;  // Aug 16, 2022, removed 12/16/23, this causes constant update of 
+                                              // range DAC and interferrs with alt range toggling
+      if((lastAlt) && (ARBparms.AlternateFreqEna))
+      {
+
+        // If here reset the frequency to the orginal value value
+        digitalWrite(ClockMode,HIGH);
+        SetFrequency(ARBparms.ActualFreq);
+        digitalWrite(ClockMode,CM);
+      }
+      lastAlt = false;          
     }
   }
   for(i=0;i<NumLLI;i++)
@@ -370,7 +389,13 @@ void WriteWFrange(float value)
   int i = ARBparms.GainDACm * value + ARBparms.GainDACb;
   if(i > 65535) i = 65535;
   if(i < 0) i = 0;
+  //noInterrupts();  // Removed 3/11/23, this caused the DMA transfer to stall due to missing interrupts
   AD5592writeDAC(AD5592_CS, DACrangeCH, i);
+  if((readOptionPins() & 0x1) == 0)
+  {
+    AD5592writeDAC(AD5592_CS, DACoffsetA, i * 0.545);
+  }
+  //interrupts();
 }
 
 void WriteWFoffset(float value)
@@ -413,6 +438,7 @@ void MeasureVoltages(void)
   PS12v[0] = Vp;
   PS12v[1] = Vn;
   // Calculate the +- 50 Volt supples from the readback channels
+  digitalWrite(MUXSEL,LOW);
   analogRead(8);
   Counts = analogRead(8);
   Vp = ((float)Counts / 4095.0) * 80.85;
@@ -421,7 +447,7 @@ void MeasureVoltages(void)
   Vn = 1.1064 * Vp - (((float)Counts / 4095.0) * 3.3) * 2.1064;
   PS50v[0] = Vp;
   PS50v[1] = Vn;  
-}
+  }
 
 // AD5625 is a 4 channel DAC.
 //
@@ -529,16 +555,38 @@ int AD5592readADC(int CS, int8_t chan, int8_t num)
   return (val / num);
 }
 
+// There is a potential for this function to be interrupted and then called again
+// from the interrupt. The code was updated 12/15/23 to queue up a request when
+// busy and execute when finished.
 void AD5592writeDAC(int CS, int8_t chan, int val)
 {
-   uint16_t  d;
+   uint16_t      d;
+   static bool   busy=false;
+   static bool   queded = false;
+   static int    qCS,qval;
+   static int8_t qchan;
    
+   if(busy)
+   {
+    queded = true;
+    qCS=CS;
+    qval=val;
+    qchan=chan;
+    return;
+   }
+   busy = true;
    // convert 16 bit DAC value into the DAC data data reg format
    d = ((val>>4) & 0x0FFF) | (((uint16_t)chan) << 12) | 0x8000;
    digitalWrite(CS,LOW);
    val = SPI.transfer((uint8_t)(d >> 8));
    val = SPI.transfer((uint8_t)d);
    digitalWrite(CS,HIGH);
+   busy = false;
+   if(queded)
+   {
+    queded = false;
+    AD5592writeDAC(qCS,qchan,qval);
+   }
 }
 
 // End of AD5592 routines
@@ -617,6 +665,41 @@ int AD5593writeDAC(int8_t addr, int8_t chan, int val)
    // convert 16 bit DAC value into the DAC data data reg format
    d = (val>>4) | (chan << 12) | 0x8000;
    return(AD5593write(addr, 0x10 | chan, d));
+}
+
+// Reads the CPU ADC and averages
+int readADC(int chan, int num)
+{
+  int j = 0;
+  
+  analogRead(chan);
+  for(int i = 0;i<num;i++) j += analogRead(chan);
+  return j / num;
+}
+
+// Mux select function, bits 0 - 7 are switch 0 - 7
+void AD728mux(int8_t addr,int8_t msk)
+{
+  Wire1.beginTransmission(addr);
+  Wire1.write(msk);
+  Wire1.endTransmission();  
+}
+
+// Mux select function
+void LTC13801mux(int8_t addr,int8_t chan)
+{
+  Wire1.beginTransmission(addr);
+  Wire1.write(0x08 | chan);
+  Wire1.endTransmission();  
+}
+
+// Read the TW readback value. Chan is 0 to 7
+int readTWreadback(int chan)
+{
+  if((readOptionPins() & 0x2) == 0) LTC13801mux(0x49,chan);
+  else AD728mux(MUXADD,1 << chan);
+  delay(1);
+  return readADC(VMUX,10);
 }
 
 void ComputeCRCbyte(byte *crc, byte by)

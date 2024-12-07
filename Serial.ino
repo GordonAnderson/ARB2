@@ -35,6 +35,8 @@ bool echoMode = false;
 Commands  CmdArray[] =   {
 // General commands
   {"GVER",  CMDstr, 0, (char *)Version},                 // Report version
+  {"GREV",  CMDint, 0, (char *)&ARBparms.rev},           // Report data structure rev value
+  {"SREV",  CMDint, 1, (char *)&ARBparms.rev},           // Set data structure rev value
   {"GERR",  CMDint, 0, (char *)&ErrorCode},              // Report the last error code
   {"SERIAL", CMDfunction, 0, (char *)&SerialIO},         // Reassigns the serial IO port to SerialUSB
   {"DEBUG",  CMDfunction, 0, (char *)&DebugFunction},    // Used for debuging funcctions
@@ -57,7 +59,7 @@ Commands  CmdArray[] =   {
   {"SPPP", CMDint, 1, (char *)&ARBparms.ppp},            // Sets ARB Twave mode point per period, 32 max, not tested
   {"GPPP", CMDint, 0, (char *)&ARBparms.ppp},            // Returns ARB Twave mode point per period  
 // JTAGpgm commands
-  {"JTAG",  CMDfunction, 0, (char *)JTAGplay},                            // Calls the jtag uploader
+  {"JTAG",  CMDfunction, 0, (char *)JTAGplay},           // Calls the jtag uploader
 // ARB general commands
   {"SMODE", CMDfunctionStr, 1, (char *)SetMode},         // Sets the ARB mode
   {"GMODE", CMDfunction, 0, (char *)GetMode},            // Reports the ARB mode
@@ -76,8 +78,10 @@ Commands  CmdArray[] =   {
   {"SSYNCENA",  CMDbool, 1, (char *)&ARBparms.SyncEnable}, // TRUE to enable externl sync enable
   {"SEXTCLK", CMDfunctionStr, 1, (char *)SetExternalClock},         // Set External clock mode, TRUE / FALSE
   {"SEXTSRC", CMDfunctionStr, 1, (char *)SetExternalClockSource},   // Set External clock source, MIPS / EXT 
-  {"SHWDCMP",  CMDbool, 1, (char *)&ARBparms.ISRcompress}, // Set to true to enable ISR processing of compress signal
-  {"GHWDCMP",  CMDbool, 0, (char *)&ARBparms.ISRcompress}, // Returns the status of the ISR compress option flag
+  {"SHWDCMP",  CMDbool, 1, (char *)&ARBparms.ISRcompress},          // Set to true to enable ISR processing of compress signal
+  {"GHWDCMP",  CMDbool, 0, (char *)&ARBparms.ISRcompress},          // Returns the status of the ISR compress option flag
+  {"GREFMUL", CMDfloat, 0, (char *)&ARBparms.RefMultiplier},        // Returns the reference multiplier value
+  {"SREFMUL", CMDfloat, 1, (char *)&ARBparms.RefMultiplier},        // Sets the reference multiplier value
   // ARB Twave mode commands
   {"SWFOFF", CMDfunction, 1, (char *)SetWFoffset},       // Set waveform offset, rev 1 function only
   {"SWFREF", CMDfunction, 1, (char *)SetWFref},          // Set waveform ref (sets gain), rev 1 function only
@@ -87,11 +91,15 @@ Commands  CmdArray[] =   {
   {"SDACV", CMDfunctionStr, 2, (char *)SetDACchannelV},  // Sets the selected DAC channel value, channel is 0-7 and value is percent of FS, +-100
   {"SWFDIR", CMDbool, 1, (char *)&ARBparms.Direction},   // Set waveform direction, forward = TRUE, reverse = FALSE
   {"GWFDIR", CMDbool, 0, (char *)&ARBparms.Direction},   // Returns direction flag
-  //{"SWFCMP", CMDbool, 1, (char *)&ARBparms.CompressEnable},// Enables or disables compression mode, TRUE = enable
-  {"SWFCMP", CMDfunctionStr, 1, (char *)SetCompressor},  // Enables or disables compression mode, TRUE = enable
-  {"GWFCMP", CMDbool, 0, (char *)&ARBparms.CompressEnable},// Return compression flag
-  {"SWFORD", CMDint, 1, (char *)&ARBparms.Order},          // Set the compression order
-  {"GWFORD", CMDint, 0, (char *)&ARBparms.Order},          // Returns the compression order
+  {"SFWDPS", CMDfloat, 1, (char *)&ARBparms.fwdPS},      // Set forward direction phase shift
+  {"GFWDPS", CMDfloat, 0, (char *)&ARBparms.fwdPS},      // Returns forward direction phase shift
+  {"SREVPS", CMDfloat, 1, (char *)&ARBparms.revPS},      // Set reverse direction phase shift
+  {"GREVPS", CMDfloat, 0, (char *)&ARBparms.revPS},      // Returns reverse direction phase shift
+  //{"SWFCMP", CMDbool, 1, (char *)&ARBparms.CompressEnable},        // Enables or disables compression mode, TRUE = enable
+  {"SWFCMP", CMDfunctionStr, 1, (char *)SetCompressor},              // Enables or disables compression mode, TRUE = enable
+  {"GWFCMP", CMDbool, 0, (char *)&ARBparms.CompressEnable},          // Return compression flag
+  {"SWFORD", CMDint, 1, (char *)&ARBparms.Order},                    // Set the compression order
+  {"GWFORD", CMDint, 0, (char *)&ARBparms.Order},                    // Returns the compression order
   {"SWFEXTCMP", CMDbool, 1 , (char *)&ARBparms.CompressHardware},    // Enable external compression control, TRUE OR FALSE  
   {"GWFEXTCMP", CMDbool, 0 , (char *)&ARBparms.CompressHardware},    // Returns external compression control flag 
   {"GBCOUNT", CMDint, 0, (char *)&Bcount},
@@ -108,6 +116,10 @@ Commands  CmdArray[] =   {
   {"RSUPPLY", CMDfunction, 0, (char *)ReportSupplyVoltages},// Reports the measured +-12V and HV opamp supplies
   {"SBIAS", CMDfunctionStr, 2, (char *)SetBoardBias},       // Sets a board (1 or 2) DC bias value (-10 to 10)
   {"SPWR", CMDfunctionStr, 1, (char *)SetPowerEnable},      // Turns power supply ON and OFF
+  // Readback commands added with ARB 5.0 and ARB_AMP 4.0
+  {"RAUX", CMDfunction, 0, (char *)reportAUX},
+  {"ROFF", CMDfunction, 0, (char *)reportOFF},
+  {"RTW", CMDfunction, 1, (char *)reportTW},
   // Calibration functions and commands, changing the reference values requires a reboot.
   {"SCALDAC", CMDfunctionLine, 0, (char *)SetCalDAC},       // Sets the slope and offset for a specific DAC channel
   {"SDACREF", CMDfloat, 1, (char *)&ARBparms.DACrefVoltage},// Sets the reference voltage used on the DAC, 3.0 or 2.5
@@ -156,6 +168,12 @@ Commands  CmdArray[] =   {
   {"GALTRENA", CMDbool, 0, (char *)&ARBparms.AlternateRngEna},  // Returns alternate waveform range enable flag
   {"SALTRNG",  CMDfloat,1, (char *)&ARBparms.AlternateRng},     // Sets the alternate waveform range in volts
   {"GALTRNG",  CMDfloat,0, (char *)&ARBparms.AlternateRng},     // Returns the alternate waveform range in volts
+
+  {"SALTFENA", CMDbool, 1, (char *)&ARBparms.AlternateFreqEna},  // Enables alternate waveform frequency. TRUE or FALSE
+  {"GALTFENA", CMDbool, 0, (char *)&ARBparms.AlternateFreqEna},  // Returns alternate waveform frequency enable flag
+  {"SALTFRQ",  CMDint,1, (char *)&ARBparms.AltFreq},             // Sets the alternate waveform frequency in Hz
+  {"GALTFRQ",  CMDint,0, (char *)&ARBparms.AltFreq},             // Returns the alternate waveform frequency in Hz
+
   // Commands to redefine the hardware control lines used for Sync and Compression
   {"SSYNCLINE",CMDfunction, 1, (char *)SetSyncLine},            // Sets the hardware line used for sync, 1 = default, 2 = default compress line
   {"SCOMPLINE",CMDfunction, 1, (char *)SetCompLine},            // Sets the hardware line used for compress, 1 = default for sync line, 2 = default  
